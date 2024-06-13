@@ -1,6 +1,4 @@
 #include "os.h"
-#include <stdio.h>
-
 
 
 // Function to update the page table
