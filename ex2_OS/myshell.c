@@ -1,8 +1,10 @@
 
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <errno.h>
+
 
 
 int prepare(void){
@@ -132,7 +134,7 @@ int process_arglist(int count, char **arglist){
         }
         else if (pid == 0){
             // child process
-            fd = open(arglist[redirect_input + 1], O_RDONLY);
+            fd = open(arglist[redirect_input + 1]);
             if (fd == -1){
                 perror("open");
                 return 1;
@@ -160,7 +162,7 @@ int process_arglist(int count, char **arglist){
         }
         else if (pid == 0){
             // child process
-            fd = open(arglist[redirect_output + 1], O_WRONLY | O_APPEND | O_CREAT, 0644);
+            fd = open(arglist[redirect_output + 1]);
             if (fd == -1){
                 perror("open");
                 return 1;
@@ -191,4 +193,5 @@ You can use this function for any cleanups related to process_arglist() that you
     return 0;
 
 }
+/*gcc -O3 -D_POSIX_C_SOURCE=200809 -Wall -std=c11 shell.c myshell.c*/
 
