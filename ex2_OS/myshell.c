@@ -17,26 +17,9 @@ void sigchld_handler(int sig) {
 
 int prepare(void){
 
-    struct sigaction sa_chld, sa_int;
-    
-    // Handle SIGCHLD to prevent zombie processes
-    sa_chld.sa_handler = sigchld_handler;
-    sigemptyset(&sa_chld.sa_mask);
-    sa_chld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-    if (sigaction(SIGCHLD, &sa_chld, NULL) == -1) {
-        fprintf(stderr, "sigaction(SIGCHLD): %s\n", strerror(errno));
-        return -1;
-    }
-
-    // Ignore SIGINT in the shell (parent) process
-    sa_int.sa_handler = SIG_IGN;
-    sigemptyset(&sa_int.sa_mask);
-    sa_int.sa_flags = 0;
-    if (sigaction(SIGINT, &sa_int, NULL) == -1) {
-        fprintf(stderr, "sigaction(SIGINT): %s\n", strerror(errno));
-        return -1;
-    }
-
+    signal(SIGINT, SIG_IGN);
+    signal(SIGCHLD, SIG_IGN);
+        
     return 0;
 }
 
@@ -48,7 +31,6 @@ int process_arglist(int count, char **arglist){
     int redirect_input = -1;
     int redirect_output = -1;
 
-    
 
     // Check for special characters
     for (int i = 0; i < count; i++) {
@@ -66,57 +48,45 @@ int process_arglist(int count, char **arglist){
             arglist[i] = NULL;
         }
     }
-
+    
     pid = fork();
-    if (pid < 0) {
+    if (pid > 0){
+        if (background){
+            // Reap all terminated child processes
+            while (waitpid(-1, NULL, WNOHANG) > 0);
+        }
+        else{
+            waitpid(pid, NULL, 0);
+        }
+    }
+    else if (pid < 0) {
         fprintf(stderr, "fork: %s\n", strerror(errno));
         return 0;
     }
-    if (pid == 0){
+    else if (pid == 0){
         if (!background){
-            // Foreground child processes should terminate upon SIGINT.
-            struct sigaction sa_int;
-            sa_int.sa_handler = SIG_DFL;
-            sigemptyset(&sa_int.sa_mask);
-            sa_int.sa_flags = 0;
-            if (sigaction(SIGINT, &sa_int, NULL) == -1) {
-                fprintf(stderr, "sigaction(SIGINT): %s\n", strerror(errno));
-                return 0;
-            }
-        }
-    }
-    
-    // handeling regular command
-    
-    if (pipe_index == -1 && redirect_input == -1 && redirect_output == -1) {
-        if (pid == 0) {
-            // child process
+            // Ignore SIGINT in the child process
+            signal(SIGINT, SIG_DFL);
 
+        }
+       
+        // handeling regular command
+        
+        if (pipe_index == -1 && redirect_input == -1 && redirect_output == -1) {
+           
             execvp(arglist[0], arglist);
             fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
             exit(1);
-        } else {
-            // parent process
-            if (!background) {
-                waitpid(pid, NULL, 0);
+            
+        // handeling pipes
+        } else if (pipe_index != -1) {
+            
+            int fd[2];
+            if (pipe(fd) == -1) {
+                fprintf(stderr, "pipe: %s\n", strerror(errno));
+                return 0;
             }
-        }
-
-    // handeling pipes
-    } else if (pipe_index != -1) {
-        /*If arglist contains the word "|" (a single pipe symbol), run two child processes,
-         with the output (stdout) of the first process (executing the command that appears before the pipe)
-          piped to the input (stdin) of the second process (executing the command that appears after the pipe).
-        • To pipe the child processes input and output, use the pipe() and dup2() system calls.
-        • Use the same array for all execvp() calls by referencing items in arglist. There’s no need
-        to allocate a new array and duplicate parts of the original array.*/
-        int fd[2];
-        if (pipe(fd) == -1) {
-            fprintf(stderr, "pipe: %s\n", strerror(errno));
-            return 0;
-        }
-        if (pid == 0) {
-            // child process
+            
             pid_t pid2;
             pid2 = fork();
             if (pid2 < 0) {
@@ -126,14 +96,8 @@ int process_arglist(int count, char **arglist){
             if (pid2 == 0) {
                 // second child process
                 // handle sigint
-                struct sigaction sa_int;
-                sa_int.sa_handler = SIG_DFL;
-                sigemptyset(&sa_int.sa_mask);
-                sa_int.sa_flags = 0;
-                if (sigaction(SIGINT, &sa_int, NULL) == -1) {
-                    fprintf(stderr, "sigaction(SIGINT): %s\n", strerror(errno));
-                    return 0;
-                }
+                
+                signal(SIGINT, SIG_DFL);    
                 // close the write end of the pipe
                 // duplicate the read end of the pipe to stdin
                 close(fd[1]);
@@ -155,19 +119,11 @@ int process_arglist(int count, char **arglist){
                 fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
                 exit(1);
             }
-        } else {
-            // parent process
-            // close both ends of the pipe
-            close(fd[0]);
-            close(fd[1]);
-            if (!background) {
-                waitpid(pid, NULL, 0);
-            }
-        }
-    // input redirection
-    } else if (redirect_input != -1){
-        int fd;
-        if (pid == 0){
+    
+        // input redirection
+        } else if (redirect_input != -1){
+            int fd;
+           
             // child process
             // open the file for reading
             fd = open(arglist[redirect_input + 1], O_RDONLY);
@@ -184,16 +140,12 @@ int process_arglist(int count, char **arglist){
                 fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
                 exit(1);
             }
-        }
-        else{
-            // parent process
-            waitpid(pid, NULL, 0);
-        }
-    // output redirection
-    } else if (redirect_output != -1){
- 
+        
+        // output redirection
+        } else if (redirect_output != -1){
+    
         int fd;
-        if (pid == 0){
+        
             // child process
             // open the file for writing, create it if it doesn't exist, and append to it
             fd = open(arglist[redirect_output + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -211,11 +163,9 @@ int process_arglist(int count, char **arglist){
                 exit(1);
             }
         }
-        else{
-            // parent process
-            waitpid(pid, NULL, 0);
-        }
-    }
+
+    }    
+    
     return 1;
 
 }
@@ -223,7 +173,6 @@ int process_arglist(int count, char **arglist){
 
 int finalize(void){
     return 0;
-
 }
 
 
