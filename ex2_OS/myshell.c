@@ -8,18 +8,7 @@
 #include <string.h>
 #include <errno.h>
 
-/*6. Handling of SIGINT:
-• Background on SIGINT (this bullet contains things you should know, not things you need to implement in the assignment): When the user presses Ctrl-C, a SIGINT signal is sent (by the OS) to the shell and all its child processes. The SIGINT signal can also be sent to a specific process using the kill() system call. (There’s also a kill program that invokes
-this system call, e.g., kill -INT <pid>.)
-• After prepare() finishes, the parent (shell) should not terminate upon SIGINT.
-• Foreground child processes (regular commands or parts of a pipe) should terminate upon SIGINT.
-• Background child processes should not terminate upon SIGINT.
-• NOTE: The program execvp()ed in a child process might change SIGINT handling. This is something the shell has no control over. Therefore, the above two bullets apply only to (1) the behavior before execvp() and (2) if the execvp()ed program doesn’t change SIGINT handling. Most programs don’t change the SIGINT handling they inherent, so these bullets apply to basically any program you are likely to test with (sleep, ls, cat, etc.).
-• IMPORTANT: To use some signal-related system calls, C11 code must have a certain macro defined. Be sure to use the compilation command line provided in Section 4 or your code might not compile.
-• You may only use the signal system call to set the signal disposition to SIG_IGN or to SIG_DFL. For any other use, particularly setting a signal handler, you must use the sigaction system call.
-*/
 
-/*You should prevent zombies and remove them as fast as possible.*/
 // Reap all terminated child processes
 
 void sigchld_handler(int sig) {
@@ -27,13 +16,7 @@ void sigchld_handler(int sig) {
 }
 
 int prepare(void){
-/*
-The skeleton calls this function before the first invocation of process_arglist().
-This function returns 0 on success; any other return value indicates an error.
-You can use this function for any initialization and setup that you think are necessary for your process_arglist().
-If you don’t need any initialization, just have this function return immediately; 
-but you must provide it for the skeleton to compile.
- */
+
     struct sigaction sa_chld, sa_int;
     
     // Handle SIGCHLD to prevent zombie processes
@@ -141,7 +124,7 @@ int process_arglist(int count, char **arglist){
                 return 0;
             }
             if (pid2 == 0) {
-                // child process
+                // second child process
                 // handle sigint
                 struct sigaction sa_int;
                 sa_int.sa_handler = SIG_DFL;
@@ -151,23 +134,30 @@ int process_arglist(int count, char **arglist){
                     fprintf(stderr, "sigaction(SIGINT): %s\n", strerror(errno));
                     return 0;
                 }
+                // close the write end of the pipe
+                // duplicate the read end of the pipe to stdin
                 close(fd[1]);
                 dup2(fd[0], STDIN_FILENO);
                 close(fd[0]);
+                // execute the command
                 execvp(arglist[pipe_index + 1], arglist + pipe_index + 1);
                 fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
                 exit(1);
             } else {
-                // parent process
+                // first child process
+                // close the read end of the pipe
+                // duplicate the write end of the pipe to stdout
                 close(fd[0]);
                 dup2(fd[1], STDOUT_FILENO);
                 close(fd[1]);
+                // execute the command
                 execvp(arglist[0], arglist);
                 fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
                 exit(1);
             }
         } else {
             // parent process
+            // close both ends of the pipe
             close(fd[0]);
             close(fd[1]);
             if (!background) {
@@ -176,22 +166,20 @@ int process_arglist(int count, char **arglist){
         }
     // input redirection
     } else if (redirect_input != -1){
-        // input redirection
-        /*If arglist contains the word “<” (a single redirection symbol),
-         open the specified file (that appears after the redirection symbol) and then run the child process, 
-         with the input (stdin) redirected from the input file.
-        • To redirect the child process’ input, use the dup2() system call.*/
         int fd;
         if (pid == 0){
             // child process
+            // open the file for reading
             fd = open(arglist[redirect_input + 1], O_RDONLY);
             if (fd == -1){
                 fprintf(stderr, "open: %s\n", strerror(errno));
                 return 0;
             }
             else{
+                // duplicate the file descriptor, and close the original
                 dup2(fd, STDIN_FILENO);
                 close(fd);
+                // execute the command
                 execvp(arglist[0], arglist);
                 fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
                 exit(1);
@@ -203,26 +191,21 @@ int process_arglist(int count, char **arglist){
         }
     // output redirection
     } else if (redirect_output != -1){
-        /*• Appending redirected output. The user enters one command and output file name separated by the redirection symbol (>>),
-         for example: cat foo >> file.txt.
-          The shell executes the command so that its standard output is redirected to the output file
-           (instead of the default, which is to the user’s terminal). 
-           If the specified output file does not exist, it is created. If it exists, 
-           the output is appended to the file. The shell waits for the command to complete before accepting another command. 
-           By default, stdout and stderr are printed to your terminal. But we can redirect that output to a file using the (>>) 
-           operator. The >> file.txt does two things: A) It creates a file named “file” if it does not exist, and B) 
-        it appends the new contents to the end of “file”.*/
+ 
         int fd;
         if (pid == 0){
             // child process
+            // open the file for writing, create it if it doesn't exist, and append to it
             fd = open(arglist[redirect_output + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (fd == -1){
                 fprintf(stderr, "open: %s\n", strerror(errno));
                 return 0;
             }
             else{
+                // duplicate the file descriptor, and close the original
                 dup2(fd, STDOUT_FILENO);
                 close(fd);
+                // execute the command
                 execvp(arglist[0], arglist);
                 fprintf(stderr, "Invalid shell command: %s\n", strerror(errno));
                 exit(1);
@@ -238,16 +221,9 @@ int process_arglist(int count, char **arglist){
 }
 
 
-
 int finalize(void){
-
-    /*2.3 int finalize(void)
-The skeleton calls this function before exiting. This function returns 0 on success; any other return value indicates an error.
-You can use this function for any cleanups related to process_arglist() that you think are necessary.
- If you don’t need any cleanups, just have this function return immediately; but you must provide it for the skeleton to compile.
-  Note that cleaning up the arglist array is not your responsibility. It is taken care of by the skeleton code.*/
     return 0;
 
 }
-/*gcc -O3 -D_POSIX_C_SOURCE=200809 -Wall -std=c11 shell.c myshell.c*/
+
 
