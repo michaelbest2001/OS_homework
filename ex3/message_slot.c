@@ -18,11 +18,12 @@ In this assignment, you will implement a kernel module that provides a new IPC m
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
-#include <linux/errno.h>
 #include <linux/string.h>   /* for memset. NOTE - not string.h!*/
+#include <linux/errno.h>
 
 #include "message_slot.h"
 
+#define MESSAGE_SLOT
 MODULE_LICENSE("GPL");
 
 
@@ -52,23 +53,22 @@ typedef struct {
     
 } slot;
 // slots: An array of pointers to slot data structures, indexed by the minor number of the message slot device file.
-static slot* slots[256] = { NULL };
-
+static slot* slots[256];
 //==================== OPEN =============================//
 static int device_open(struct inode *inode, struct file *file)
 {   
     int minor = iminor(inode);
+    printk("Device opened(%p)\n", file);
     if (slots[minor] == NULL) {
         slots[minor] = kmalloc(sizeof(slot), GFP_KERNEL);
+        if (slots[minor] == NULL) {
+            printk(KERN_ERR "Failed to allocate memory for slot(%d)\n", minor);
+            return -ENOMEM;
+        }
         slots[minor]->minor = minor;
         slots[minor]->channels = NULL;
+        file->private_data = NULL;
     }
-    else {
-        printk(KERN_ERR "Device already open\n");
-        return -1;
-    }
-    file->private_data = NULL;
-
     return SUCCESS;
 }
 //==================== RELEASE =============================//
@@ -80,9 +80,10 @@ static int device_release(struct inode *inode, struct file *file)
         slots[minor] = NULL;
     }
     else {
-        printk(KERN_ERR "Device already closed\n");
+        printk(KERN_ERR "Device already closed(%d)\n", minor);
         return -1;
     }
+    printk(KERN_INFO "Device closed(%d)\n", minor);
     return SUCCESS;
 }
 //==================== READ =============================//
@@ -92,24 +93,21 @@ static int device_release(struct inode *inode, struct file *file)
 • In any other error case (for example, failing to allocate memory), returns -1 and errno is set appropriately (you are free to choose the exact value).
 2*/
 static ssize_t device_read(struct file *file, char __user * buffer, size_t length, loff_t * offset){
-    channel* ch = (channel*)file->private_data;
+    channel* ch;
+    ch = (channel*)file->private_data;
 
     if (ch == NULL) {
-        errno = EINVAL;
-        return -1;
+        return -EINVAL;
     }
 
     if (ch->msg_len == 0) {
-        errno = EWOULDBLOCK;
-        return -1;
+        return -EWOULDBLOCK;
     }
     if (length < ch->msg_len) {
-        errno = ENOSPC;
-        return -1;
+        return -ENOSPC; 
     }
     if (copy_to_user(buffer, ch->message, ch->msg_len) != 0) {
-        errno = EFAULT;
-        return -1;
+        return -EFAULT;
     }
 
     return ch->msg_len;
@@ -118,20 +116,18 @@ static ssize_t device_read(struct file *file, char __user * buffer, size_t lengt
 /*• If no channel has been set on the file descriptor, returns -1 and errno is set to EINVAL.
 • If the passed message length is 0 or more than 128, returns -1 and errno is set to EMSGSIZE.
 • In any other error case (for example, failing to allocate memory), returns -1 and errno is set appropriately (you are free to choose the exact value).*/
-static int device_write(struct file *file, const char __user * buffer, size_t length, loff_t * offset){
-    channel* ch = (channel*)file->private_data;
+static ssize_t device_write(struct file *file, const char __user * buffer, size_t length, loff_t * offset){
+    channel* ch;
+    ch = (channel*)file->private_data;
 
     if (ch == NULL) {
-        errno = EINVAL;
-        return -1;
+        return -EINVAL;
     }
     if (length == 0 || length > BUF_LEN) {
-        errno = EMSGSIZE;
-        return -1;
+        return -EMSGSIZE;
     }
     if (copy_from_user(ch->message, buffer, length) != 0) {
-        errno = EFAULT;
-        return -1;
+        return -EFAULT;
     }
     ch->msg_len = length;
     // return the number of bytes written to the device
@@ -147,19 +143,18 @@ Error cases:
 • If the passed command is not MSG_SLOT_CHANNEL, the ioctl() returns -1 and errno is set to EINVAL.
 • If the passed channel id is 0, the ioctl() returns -1 and errno is set to EINVAL.*/
 
-static int device_ioctl(struct file *file, unsigned int ioctl_command, unsigned long ioctl_param){
-    channel* ch = (channel*)file->private_data;
-    
+static long device_ioctl(struct file *file, unsigned int ioctl_command, unsigned long ioctl_param){
+    channel* ch;
+    slot* sl;
+    ch = (channel*)file->private_data;
+    sl = slots[iminor(file->f_inode)];
     if (ioctl_command != MSG_SLOT_CHANNEL) {
-        errno = EINVAL;
-        return -1;
+        return -EINVAL;
     }
     if (ioctl_param == 0) {
-        errno = EINVAL;
-        return -1;
+        return -EINVAL;
     }
-    slot *sl = slots[iminor(file->f_inode)];
-
+    
     if (ch == NULL) { 
         // create a new channel
         ch = kmalloc(sizeof(channel), GFP_KERNEL);
@@ -179,13 +174,14 @@ static int device_ioctl(struct file *file, unsigned int ioctl_command, unsigned 
     return SUCCESS;
 }
 //==================== DEVICE SETUP =============================//
-static struct file_operations Fops = {
-    .read = device_read,
-    .write = device_write,
+struct file_operations Fops = {
+    .owner          = THIS_MODULE,
+    .read           = device_read,
+    .write          = device_write,
     .unlocked_ioctl = device_ioctl,
-    .open = device_open,
-    .release = device_release
-    .owner = THIS_MODULE,
+    .open           = device_open,
+    .release        = device_release
+    
 };
 //==================== INIT MODULE =============================//
 static int __init simple_init(void)
@@ -203,7 +199,8 @@ static int __init simple_init(void)
 static void __exit simple_cleanup(void)
 {
     // free the memory allocated for the slots and channels
-    for (int i = 0; i < 256; i++) {
+    int i;
+    for (i = 0; i < 256; i++) {
         if (slots[i] != NULL) {
             channel* ch = slots[i]->channels;
             while (ch != NULL) {
@@ -218,6 +215,8 @@ static void __exit simple_cleanup(void)
     unregister_chrdev(MAJOR_NUM, DEVICE_RANGE_NAME);
     printk(KERN_INFO "Unregistered the device\n");
 }
+module_init(simple_init);
+module_exit(simple_cleanup);
 
 /*1. message_slot: A kernel module implementing the message slot IPC mechanism.
  2. message_sender: A user space program to send a message.

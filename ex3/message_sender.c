@@ -20,8 +20,6 @@ If an error occurs in any of the above steps, print an appropriate error message
 #include <sys/ioctl.h>
 #include "message_slot.h"
 
-#define MSG_SLOT_CHANNEL _IOW(0, 0, unsigned int)
-
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {

@@ -10,7 +10,7 @@
 // 5. Close the device.
 // 6. Exit the program with exit value 0.
 // If an error occurs in any of the above steps, print an appropriate error message (using strerror() or perror()) and exit the program with exit value 1.
-//
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +21,7 @@
 #include <sys/ioctl.h>
 #include "message_slot.h"
 
-#define MSG_SLOT_CHANNEL _IOW(0, 0, unsigned int)
+
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
