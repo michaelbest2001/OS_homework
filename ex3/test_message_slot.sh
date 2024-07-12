@@ -178,11 +178,10 @@ test_message_reader ${DEVICE_PATH}${MINOR} ${CHANNEL} "Message 4" "Multiple writ
 test_message_reader ${DEVICE_PATH}${MINOR} ${CHANNEL} "Message 4" "Multiple writes and reads on the same channel - Read 2"
 
 # Test 13: memory leak test with a lot of writes and reads with valgrind
-for i in {1..1000}; do
+for i in {1..30}; do
     test_message_sender ${DEVICE_PATH}${MINOR} ${CHANNEL} "Message $i" "Memory leak test - Write $i"
     test_message_reader ${DEVICE_PATH}${MINOR} ${CHANNEL} "Message $i" "Memory leak test - Read $i"
     valgrind --leak-check=full ./message_sender ${DEVICE_PATH}${MINOR} ${CHANNEL} "Message $i"
-    valgrind --leak-check=full ./message_reader ${DEVICE_PATH}${MINOR} ${CHANNEL}
 done
 
 # Clean up

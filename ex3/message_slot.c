@@ -21,20 +21,16 @@ MODULE_LICENSE("GPL");
 // struct channel: A data structure to hold a message and its length.
 
 typedef struct channel {
-    unsigned int id;
+    unsigned long id;
     char message[BUF_LEN];
     int msg_len;
     struct channel* next;
     
 } channel;
 
-// struct slot: A data structure to hold the minor number and the channels of a message slot.
+// struct slot: A data structure to hold the channels of a message slot.
 typedef struct {
-    //int num_of_files;
-    int minor;
     channel* channels;
-    channel* cur_channel;
-
 } slot;
 // slots: An array of pointers to slot data structures, indexed by the minor number of the message slot device file.
 static slot* slots[256];
@@ -46,6 +42,21 @@ static long device_ioctl(struct file *file, unsigned int ioctl_command_id, unsig
 static ssize_t device_read(struct file *file, char __user *buffer, size_t length, loff_t *offset);
 static ssize_t device_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset);
 static int device_release(struct inode *inode, struct file *file);
+static channel* get_channel(slot* slot, unsigned long channel_id);
+
+//==================== GET CHANNEL =============================//
+// get_channel: A function to get a channel by its id.
+static channel* get_channel(slot* slot, unsigned long channel_id) {
+    channel* ch;
+    ch = slot->channels;
+    while (ch != NULL) {
+        if (ch->id == channel_id) {
+            return ch;
+        }
+        ch = ch->next;
+    }
+    return NULL;
+}
 
 //==================== OPEN =============================//
 static int device_open(struct inode *inode, struct file *file)
@@ -57,14 +68,9 @@ static int device_open(struct inode *inode, struct file *file)
         if (!slots[minor]) {
             return -ENOMEM;
         }
-        slots[minor]->minor = minor;
         slots[minor]->channels = NULL;
-        slots[minor]->cur_channel = NULL;
     }
-    // set the current channel to NULL and the private data of the file to the slot
-    slots[minor]->cur_channel = NULL;
-    file->private_data = slots[minor];
-    //slots[minor]->num_of_files++; 
+    file->private_data = NULL;
     printk(KERN_INFO "Device opened(%d)\n", minor);
     return SUCCESS;
 }
@@ -73,17 +79,6 @@ static int device_open(struct inode *inode, struct file *file)
 static int device_release(struct inode *inode, struct file *file)
 {
     int minor = iminor(inode);
-    /*
-    if (slots[minor]->num_of_files == 0) {
-        printk(KERN_ERR "Error: device already closed(%d)\n", minor);
-        return -EINVAL;
-    }
-    slots[minor]->num_of_files--; 
-    // free the slot if no files are open
-    if (slots[minor] != NULL && (slots[minor]->num_of_files == 0)) {
-        kfree(slots[minor]);
-        slots[minor] = NULL;
-    }*/
     // free any memory allocated for the current file
     file->private_data = NULL;
     
@@ -95,8 +90,10 @@ static int device_release(struct inode *inode, struct file *file)
 static ssize_t device_read(struct file *file, char __user * buffer, size_t length, loff_t * offset){
     channel* ch;
     slot* slot;
-    slot =  file->private_data;
-    ch = slot->cur_channel;
+    int channel_id;
+    channel_id = (unsigned long) file->private_data;
+    slot =  slots[iminor(file->f_inode)];
+    ch = get_channel(slot, channel_id);
 
     if (ch == NULL) {
         return -EINVAL;
@@ -115,7 +112,7 @@ static ssize_t device_read(struct file *file, char __user * buffer, size_t lengt
         return -EFAULT;
     }
     // return the number of bytes read from the device
-    printk(KERN_INFO "Message read from channel %d\n: %s\n", ch->id, ch->message);
+    printk(KERN_INFO "Message read from channel %ld\n: %s\n", ch->id, ch->message);
     return ch->msg_len;
 }
 //==================== WRITE =============================//
@@ -123,8 +120,10 @@ static ssize_t device_read(struct file *file, char __user * buffer, size_t lengt
 static ssize_t device_write(struct file *file, const char __user * buffer, size_t length, loff_t * offset){
     channel* ch;
     slot* slot;
-    slot = file->private_data;
-    ch = slot->cur_channel;
+    int channel_id;
+    channel_id = (unsigned long) file->private_data;
+    slot =  slots[iminor(file->f_inode)];
+    ch = get_channel(slot, channel_id);
 
     if (ch == NULL) {
         return -EINVAL;
@@ -141,7 +140,7 @@ static ssize_t device_write(struct file *file, const char __user * buffer, size_
     }
     ch->msg_len = length;
     // return the number of bytes written to the device
-    printk(KERN_INFO "Message written to channel %d\n: %s\n", ch->id, ch->message);
+    printk(KERN_INFO "Message written to channel %ld\n: %s\n", ch->id, ch->message);
     return length;
 }
 //==================== IOCTL =============================//
@@ -149,36 +148,30 @@ static ssize_t device_write(struct file *file, const char __user * buffer, size_
 static long device_ioctl(struct file *file, unsigned int ioctl_command, unsigned long ioctl_param){
     slot* slot; 
     channel* ch;
-    unsigned int channel_id;
-
-    slot = file->private_data;
+    unsigned long channel_id;
     channel_id = ioctl_param;
+    slot = slots[iminor(file->f_inode)];
 
     // check if the ioctl command is valid
     if (ioctl_command != MSG_SLOT_CHANNEL || channel_id == 0) {
         return -EINVAL;
     }
-    // set the current channel to the specified channel
-    ch = slot->channels;
-    while (ch != NULL) {
-        if (ch->id == channel_id) {
-            slot->cur_channel = ch;
-            printk(KERN_INFO "Channel set to %d\n", channel_id);
-            return SUCCESS;
-        }
-        ch = ch->next;
-    }
     // create a new channel if it does not exist
-    ch = kmalloc(sizeof(channel), GFP_KERNEL);
-    if (!ch) {
-        return -ENOMEM;
+    if (get_channel(slot, channel_id) == NULL) {
+        
+        ch = kmalloc(sizeof(channel), GFP_KERNEL);
+        if (!ch) {
+            return -ENOMEM;
+        }
+        // initialize the channel
+        ch->id = channel_id;
+        ch->msg_len = 0;
+        ch->next = slot->channels;
+        // add the channel to the slot
+        slot->channels = ch;
     }
-    // initialize the channel
-    ch->id = channel_id;
-    ch->msg_len = 0;
-    ch->next = slot->channels;
-    slot->channels = ch;
-    slot->cur_channel = ch;
+    // set the private data of the file to the channel id
+    file->private_data = (void*)channel_id;
     return SUCCESS;
 }
 //==================== DEVICE SETUP =============================//
