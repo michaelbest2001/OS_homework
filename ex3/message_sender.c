@@ -1,15 +1,3 @@
-/*Implement the program in a file named message_sender.c.
-Command line arguments:
-• argv[1]: message slot file path.
-• argv[2]: the target message channel id. Assume a non-negative integer. • argv[3]: the message to pass.
-You should validate that the correct number of command line arguments is passed.
-The flow:
-1. Open the specified message slot device file.
-2. Set the channel id to the id specified on the command line.
-3. Write the specified message to the message slot file. Don’t include the terminating null character of the C string as part of the message.
-4. Close the device.
-5. Exit the program with exit value 0.
-If an error occurs in any of the above steps, print an appropriate error message (using strerror() or perror()) and exit the program with exit value 1.*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +10,7 @@ If an error occurs in any of the above steps, print an appropriate error message
 
 
 int main(int argc, char* argv[]) {
+    // Validate the number of command line arguments.
     if (argc != 4) {
         fprintf(stderr, "Usage: %s <message slot file path> <target message channel id> <message>\n", argv[0]);
         exit(1);
@@ -37,6 +26,7 @@ int main(int argc, char* argv[]) {
         close(fd);
         exit(1);
     }
+    // Write the specified message to the message slot file.
     if (write(fd, argv[3], strlen(argv[3])) == -1) {
         perror("write");
         close(fd);

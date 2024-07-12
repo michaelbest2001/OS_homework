@@ -2,37 +2,19 @@
 #define __KERNEL__
 #undef MODULE
 #define MODULE
-/*The goal of this assignment is to gain experience with kernel programming and, particularly, 
-a better understanding on the design and implementation of inter-process communication (IPC), kernel modules, and drivers.
-In this assignment, you will implement a kernel module that provides a new IPC mechanism, called a message slot.
- A message slot is a character device file through which processes communicate. 
- A message slot device has multiple message channels active concurrently, which can be used by multiple processes.
-  After opening a message slot device file, a process uses ioctl() to specify the id of the message channel it wants to use. 
-  It subsequently uses read()/write() to receive/send messages on the channel. In contrast to pipes,
-   a message channel preserves a message until it is overwritten, so the same message can be read multiple times.
-*/
 
-// make sure to include the necessary header files
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
-#include <linux/string.h>   /* for memset. NOTE - not string.h!*/
+#include <linux/string.h>  
 #include <linux/errno.h>
 
 #include "message_slot.h"
 
 #define MESSAGE_SLOT
 MODULE_LICENSE("GPL");
-
-
-/*You’ll need a data structure to describe individual message slots (device files with different minor numbers).
- In device_open(), the module can check if it has already created a data structure for the file being opened, and create one if not. 
- You can get the opened file’s minor number using the iminor() kernel function (applied to the struct inode* argument of device_open()).
-*/
-
-// The message slot device file will be named /dev/message_slot.<minor>, where <minor> is the minor number of the device file.
 
 //==================== DATA STRUCTURES =============================//
 
@@ -48,7 +30,7 @@ typedef struct channel {
 
 // struct slot: A data structure to hold the minor number and the channels of a message slot.
 typedef struct {
-    int num_of_files;
+    //int num_of_files;
     int minor;
     channel* channels;
     channel* cur_channel;
@@ -82,19 +64,16 @@ static int device_open(struct inode *inode, struct file *file)
     // set the current channel to NULL and the private data of the file to the slot
     slots[minor]->cur_channel = NULL;
     file->private_data = slots[minor];
-    // increment the number of open files
-    slots[minor]->num_of_files++; 
+    //slots[minor]->num_of_files++; 
     printk(KERN_INFO "Device opened(%d)\n", minor);
     return SUCCESS;
 }
 //==================== RELEASE =============================//
-/*When a message slot file is closed, any memory that was allocated specifically for that file object
-should be freed. For this, you can use the release method (of struct file_operations), which
-the kernel invokes when a device’s open file gets closed*/
+
 static int device_release(struct inode *inode, struct file *file)
 {
-    // decrement the number of open files 
     int minor = iminor(inode);
+    /*
     if (slots[minor]->num_of_files == 0) {
         printk(KERN_ERR "Error: device already closed(%d)\n", minor);
         return -EINVAL;
@@ -104,18 +83,15 @@ static int device_release(struct inode *inode, struct file *file)
     if (slots[minor] != NULL && (slots[minor]->num_of_files == 0)) {
         kfree(slots[minor]);
         slots[minor] = NULL;
-    }
+    }*/
+    // free any memory allocated for the current file
     file->private_data = NULL;
     
     printk(KERN_INFO "Device closed(%d)\n", minor);
     return SUCCESS;
 }
 //==================== READ =============================//
-/*• If no channel has been set on the file descriptor, returns -1 and errno is set to EINVAL.
-• If no message exists on the channel, returns -1 and errno is set to EWOULDBLOCK.
-• If the provided buffer length is too small to hold the last message written on the channel, returns -1 and errno is set to ENOSPC.
-• In any other error case (for example, failing to allocate memory), returns -1 and errno is set appropriately (you are free to choose the exact value).
-2*/
+
 static ssize_t device_read(struct file *file, char __user * buffer, size_t length, loff_t * offset){
     channel* ch;
     slot* slot;
@@ -128,10 +104,12 @@ static ssize_t device_read(struct file *file, char __user * buffer, size_t lengt
     if (ch->msg_len == 0) {
         return -EWOULDBLOCK;
     }
+    // check if the buffer length is too small
     if (length < ch->msg_len) {
         printk(KERN_ERR "Buffer length is too small\n");
         return -ENOSPC;
     }
+    // copy the message to the user buffer
     if (copy_to_user(buffer, ch->message, ch->msg_len) != 0) {
         printk(KERN_ERR "Failed to copy message to user\n");
         return -EFAULT;
@@ -141,9 +119,7 @@ static ssize_t device_read(struct file *file, char __user * buffer, size_t lengt
     return ch->msg_len;
 }
 //==================== WRITE =============================//
-/*• If no channel has been set on the file descriptor, returns -1 and errno is set to EINVAL.
-• If the passed message length is 0 or more than 128, returns -1 and errno is set to EMSGSIZE.
-• In any other error case (for example, failing to allocate memory), returns -1 and errno is set appropriately (you are free to choose the exact value).*/
+
 static ssize_t device_write(struct file *file, const char __user * buffer, size_t length, loff_t * offset){
     channel* ch;
     slot* slot;
@@ -153,10 +129,12 @@ static ssize_t device_write(struct file *file, const char __user * buffer, size_
     if (ch == NULL) {
         return -EINVAL;
     }
+    // check if the message length is invalid
     if (length == 0 || length > BUF_LEN) {
         printk(KERN_ERR "Message length is invalid\n");
         return -EMSGSIZE;
     }
+    // copy the message from the user buffer
     if (copy_from_user(ch->message, buffer, length) != 0) {
         printk(KERN_ERR "Failed to copy message from user\n");
         return -EFAULT;
@@ -167,14 +145,6 @@ static ssize_t device_write(struct file *file, const char __user * buffer, size_
     return length;
 }
 //==================== IOCTL =============================//
-/*A message slot supports a single ioctl command, named MSG_SLOT_CHANNEL. 
-This command takes a single unsigned int parameter that specifies a non-zero channel id. 
-Invoking the ioctl() sets the file descriptor’s channel id. 
-Subsequent reads/writes on this file descriptor will receive/send messages on the specified channel.
-
-Error cases:
-• If the passed command is not MSG_SLOT_CHANNEL, the ioctl() returns -1 and errno is set to EINVAL.
-• If the passed channel id is 0, the ioctl() returns -1 and errno is set to EINVAL.*/
 
 static long device_ioctl(struct file *file, unsigned int ioctl_command, unsigned long ioctl_param){
     slot* slot; 
@@ -184,10 +154,11 @@ static long device_ioctl(struct file *file, unsigned int ioctl_command, unsigned
     slot = file->private_data;
     channel_id = ioctl_param;
 
+    // check if the ioctl command is valid
     if (ioctl_command != MSG_SLOT_CHANNEL || channel_id == 0) {
         return -EINVAL;
     }
-
+    // set the current channel to the specified channel
     ch = slot->channels;
     while (ch != NULL) {
         if (ch->id == channel_id) {
@@ -197,10 +168,12 @@ static long device_ioctl(struct file *file, unsigned int ioctl_command, unsigned
         }
         ch = ch->next;
     }
+    // create a new channel if it does not exist
     ch = kmalloc(sizeof(channel), GFP_KERNEL);
     if (!ch) {
         return -ENOMEM;
     }
+    // initialize the channel
     ch->id = channel_id;
     ch->msg_len = 0;
     ch->next = slot->channels;
@@ -252,11 +225,4 @@ static void __exit simple_cleanup(void)
 }
 module_init(simple_init);
 module_exit(simple_cleanup);
-
-/*1. message_slot: A kernel module implementing the message slot IPC mechanism.
- 2. message_sender: A user space program to send a message.
-3. message_reader: A user space program to read a message.
-*/
-
-//If module initialization fails, print an error message using printk(KERN_ERR ...).
 
