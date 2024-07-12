@@ -48,41 +48,65 @@ typedef struct channel {
 
 // struct slot: A data structure to hold the minor number and the channels of a message slot.
 typedef struct {
+    int num_of_files;
     int minor;
     channel* channels;
-    
+    channel* cur_channel;
+
 } slot;
 // slots: An array of pointers to slot data structures, indexed by the minor number of the message slot device file.
 static slot* slots[256];
+
+
+// Function prototypes
+static int device_open(struct inode *inode, struct file *file);
+static long device_ioctl(struct file *file, unsigned int ioctl_command_id, unsigned long ioctl_param);
+static ssize_t device_read(struct file *file, char __user *buffer, size_t length, loff_t *offset);
+static ssize_t device_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset);
+static int device_release(struct inode *inode, struct file *file);
+
 //==================== OPEN =============================//
 static int device_open(struct inode *inode, struct file *file)
-{   
+{
     int minor = iminor(inode);
-    printk("Device opened(%p)\n", file);
+    // check if the slot has already been created and create one if not
     if (slots[minor] == NULL) {
         slots[minor] = kmalloc(sizeof(slot), GFP_KERNEL);
-        if (slots[minor] == NULL) {
-            printk(KERN_ERR "Failed to allocate memory for slot(%d)\n", minor);
+        if (!slots[minor]) {
             return -ENOMEM;
         }
         slots[minor]->minor = minor;
         slots[minor]->channels = NULL;
-        file->private_data = NULL;
+        slots[minor]->cur_channel = NULL;
     }
+    // set the current channel to NULL and the private data of the file to the slot
+    slots[minor]->cur_channel = NULL;
+    file->private_data = slots[minor];
+    // increment the number of open files
+    slots[minor]->num_of_files++; 
+    printk(KERN_INFO "Device opened(%d)\n", minor);
     return SUCCESS;
 }
 //==================== RELEASE =============================//
+/*When a message slot file is closed, any memory that was allocated specifically for that file object
+should be freed. For this, you can use the release method (of struct file_operations), which
+the kernel invokes when a device’s open file gets closed*/
 static int device_release(struct inode *inode, struct file *file)
 {
+    // decrement the number of open files 
     int minor = iminor(inode);
-    if (slots[minor] != NULL) {
+    if (slots[minor]->num_of_files == 0) {
+        printk(KERN_ERR "Error: device already closed(%d)\n", minor);
+        return -EINVAL;
+    }
+    slots[minor]->num_of_files--; 
+    // free the slot if no files are open
+    if (slots[minor] != NULL && (slots[minor]->num_of_files == 0)) {
         kfree(slots[minor]);
         slots[minor] = NULL;
     }
-    else {
-        printk(KERN_ERR "Device already closed(%d)\n", minor);
-        return -1;
-    }
+    file->private_data = NULL;
+    
     printk(KERN_INFO "Device closed(%d)\n", minor);
     return SUCCESS;
 }
@@ -94,22 +118,26 @@ static int device_release(struct inode *inode, struct file *file)
 2*/
 static ssize_t device_read(struct file *file, char __user * buffer, size_t length, loff_t * offset){
     channel* ch;
-    ch = (channel*)file->private_data;
+    slot* slot;
+    slot =  file->private_data;
+    ch = slot->cur_channel;
 
     if (ch == NULL) {
         return -EINVAL;
     }
-
     if (ch->msg_len == 0) {
         return -EWOULDBLOCK;
     }
     if (length < ch->msg_len) {
-        return -ENOSPC; 
+        printk(KERN_ERR "Buffer length is too small\n");
+        return -ENOSPC;
     }
     if (copy_to_user(buffer, ch->message, ch->msg_len) != 0) {
+        printk(KERN_ERR "Failed to copy message to user\n");
         return -EFAULT;
     }
-
+    // return the number of bytes read from the device
+    printk(KERN_INFO "Message read from channel %d\n: %s\n", ch->id, ch->message);
     return ch->msg_len;
 }
 //==================== WRITE =============================//
@@ -118,19 +146,24 @@ static ssize_t device_read(struct file *file, char __user * buffer, size_t lengt
 • In any other error case (for example, failing to allocate memory), returns -1 and errno is set appropriately (you are free to choose the exact value).*/
 static ssize_t device_write(struct file *file, const char __user * buffer, size_t length, loff_t * offset){
     channel* ch;
-    ch = (channel*)file->private_data;
+    slot* slot;
+    slot = file->private_data;
+    ch = slot->cur_channel;
 
     if (ch == NULL) {
         return -EINVAL;
     }
     if (length == 0 || length > BUF_LEN) {
+        printk(KERN_ERR "Message length is invalid\n");
         return -EMSGSIZE;
     }
     if (copy_from_user(ch->message, buffer, length) != 0) {
+        printk(KERN_ERR "Failed to copy message from user\n");
         return -EFAULT;
     }
     ch->msg_len = length;
     // return the number of bytes written to the device
+    printk(KERN_INFO "Message written to channel %d\n: %s\n", ch->id, ch->message);
     return length;
 }
 //==================== IOCTL =============================//
@@ -144,33 +177,35 @@ Error cases:
 • If the passed channel id is 0, the ioctl() returns -1 and errno is set to EINVAL.*/
 
 static long device_ioctl(struct file *file, unsigned int ioctl_command, unsigned long ioctl_param){
+    slot* slot; 
     channel* ch;
-    slot* sl;
-    ch = (channel*)file->private_data;
-    sl = slots[iminor(file->f_inode)];
-    if (ioctl_command != MSG_SLOT_CHANNEL) {
+    unsigned int channel_id;
+
+    slot = file->private_data;
+    channel_id = ioctl_param;
+
+    if (ioctl_command != MSG_SLOT_CHANNEL || channel_id == 0) {
         return -EINVAL;
     }
-    if (ioctl_param == 0) {
-        return -EINVAL;
+
+    ch = slot->channels;
+    while (ch != NULL) {
+        if (ch->id == channel_id) {
+            slot->cur_channel = ch;
+            printk(KERN_INFO "Channel set to %d\n", channel_id);
+            return SUCCESS;
+        }
+        ch = ch->next;
     }
-    
-    if (ch == NULL) { 
-        // create a new channel
-        ch = kmalloc(sizeof(channel), GFP_KERNEL);
-        ch->id = ioctl_param;
-        ch->msg_len = 0;
-        // add the new channel to the slot
-        ch->next = sl->channels;
-        // set the new channel as the current channel
-        sl->channels = ch;
-        // set the channel as the private data of the file
-        file->private_data = ch;
-        
+    ch = kmalloc(sizeof(channel), GFP_KERNEL);
+    if (!ch) {
+        return -ENOMEM;
     }
-    else {
-        ch->id = ioctl_param;
-    }
+    ch->id = channel_id;
+    ch->msg_len = 0;
+    ch->next = slot->channels;
+    slot->channels = ch;
+    slot->cur_channel = ch;
     return SUCCESS;
 }
 //==================== DEVICE SETUP =============================//
