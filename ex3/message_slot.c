@@ -20,6 +20,7 @@ MODULE_LICENSE("GPL");
 
 // struct channel: A data structure to hold a message and its length.
 
+
 typedef struct channel {
     unsigned long id;
     char message[BUF_LEN];

@@ -1,13 +1,10 @@
-# Kernel module name
+
 MODULE_NAME := message_slot
 
-# User-space program names
 USER_PROGRAMS := message_sender message_reader
 
-# Kernel source directory
 KERNEL_SOURCE := /lib/modules/$(shell uname -r)/build
 
-# Compiler
 CC := gcc
 
 # Kernel module source files
