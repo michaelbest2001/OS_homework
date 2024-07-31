@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include "queue.c"
+#include <threads.h>
+#include "queue.h"
 
 #define NUM_OPERATIONS 10
 #define MAX_SIZE 1000
@@ -134,12 +136,19 @@ int dequeue_with_wait(void *arg)
         if (tryDequeue(&item))
         {
             // Item dequeued successfully
+            if (item == NULL)
+            {
+                // Queue is empty
+                printf("Queue is empty\n");
+            }
             int value = *(int *)item;
+            
             printf("Dequeued item: %d\n", value);
             return value;
         }
         else
         {
+            printf("Thread %lx is waiting for an item\n", thrd_current());
             // Queue is empty, sleep for the specified time
             thrd_sleep(sleep_time, NULL);
         }
@@ -158,6 +167,7 @@ void test_waiting()
     {
         enqueue(&items[i]);
     }
+    printf("finished enqueuing\n");
 
     // Create threads that will wait for items in the queue
     thrd_t threads[3];
@@ -385,6 +395,8 @@ int producer_thread(void *arg)
         int *item = malloc(sizeof(int));
         *item = i + 1;
         enqueue(item);
+        printf("sleeping for 1 second\n");
+        sleep(1);
     }
 
     return 0;
@@ -412,17 +424,17 @@ void test_multiconcurrent_enqueue_dequeue()
     // Wait for enqueueing threads to finish
     for (int i = 0; i < NUM_THREADS_CONC; i++)
     {
-        printf("waiting for enqueue thread %d\n", i);
+        //printf("waiting for enqueue thread %d\n", i);
         thrd_join(enqueueThreads[i], NULL);
-        printf("enqueued thread %d joined\n", i);
+        //printf("enqueued thread %d joined\n", i);
     }
 
     // Wait for dequeueing threads to finish
     for (int i = 0; i < NUM_THREADS_CONC; i++)
     {
-        printf("waiting for dequeue thread %d\n", i);
+        //printf("waiting for dequeue thread %d\n", i);
         thrd_join(dequeueThreads[i], NULL);
-        printf("dequeued thread %d joined\n", i);
+        //rintf("dequeued thread %d joined\n", i);
     }
 
     // Queue should be empty
@@ -543,7 +555,7 @@ void test_mixed_operations()
 
 int main()
 {
-    for (int i = 0; i < 100; i++)
+    for (int i = 0; i < 1000; i++)
     {
         printf("========================================== Test %d ====================================\n", i + 1);
         test_destroyQueue();

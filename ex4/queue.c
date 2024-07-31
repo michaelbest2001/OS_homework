@@ -4,74 +4,42 @@
 #include <stdatomic.h>
 #include <threads.h>
 
+// ================================== data structures ==================================//
+// Node structure
 typedef struct Node {
     void* data;
     struct Node* next;
     struct Node* prev;
 } Node;
-
+// ThreadNode structure
 typedef struct ThreadNode {
-    thrd_t thread;
     cnd_t cond;
     struct ThreadNode* next;
     struct ThreadNode* prev;
 } ThreadNode;
-
+// Queue structure
 typedef struct Queue {
     Node* head;
     Node* tail;
     int total_visited;
     int size;
     mtx_t mutex;
-    cnd_t not_empty;
 
 } Queue;
-
+// Thread_queue structure
 typedef struct Thread_queue {
     ThreadNode* head;
     ThreadNode* tail;
     int waiting_threads;
-    cnd_t wake_to_dequeue;
 } Thread_queue;
 
+// ================================== global variables ==================================//
 Queue* queue;
 Thread_queue* threads;
 
-/*void printQueue(void){
-    Node* temp = queue->head;
-    printf("##### printing the queue #####\n");
-    while(temp != NULL){
-        printf("the item is %d\n", *(int*)temp->data);
-        temp = temp->next;
-    }
-    printf("the head of the queue is %d\n", *(int*)queue->head->data);
-    printf("the tail of the queue is %d\n", *(int*)queue->tail->data);
-    printf("##### end of the queue #####\n");
-}
+// ================================= helper functions =================================
 
-void printThreads(void){
-    ThreadNode* temp = threads->head;
-    printf("##### printing the threads #####\n");
-    while(temp != NULL){
-        printf("thread : %ld\n", temp->thread);
-        temp = temp->next;
-    }
-    if (threads->head == NULL){
-        printf("the head of the threads is NULL\n");
-    }
-    else{
-        printf("the head of the threads is %ld\n", threads->head->thread);
-    }
-    if (threads->tail == NULL){
-        printf("the tail of the threads is NULL\n");
-    }
-    else{
-        printf("the tail of the threads is %ld\n", threads->tail->thread);
-    }
-
-    printf("##### end of the threads #####\n");
-}*/
-
+// a helper function to add a thread to the thread queue
 void addThread(ThreadNode* thread){
     if (threads->head == NULL){
         threads->head = thread;
@@ -85,8 +53,10 @@ void addThread(ThreadNode* thread){
     threads->waiting_threads++;
 }
 
+// a helper function to remove the tail of the thread queue
 void removeThreadTail(void){
     if (threads->waiting_threads == 1){
+        cnd_destroy(&threads->tail->cond);
         free(threads->tail);
         threads->tail = NULL;
         threads->head = NULL;
@@ -94,6 +64,7 @@ void removeThreadTail(void){
     }
     else if (threads->waiting_threads > 1){
         ThreadNode* temp = threads->tail->prev;
+        cnd_destroy(&threads->tail->cond);
         free(threads->tail);
         threads->tail = temp;
         threads->tail->next = NULL;
@@ -101,10 +72,7 @@ void removeThreadTail(void){
     }
 }
 
-void wakeUpThread(ThreadNode* thread){
-    cnd_signal(&thread->cond);
-}
-
+// a helper function to add a node to the queue
 void addNode(Node* node){
     if (queue->head == NULL){
         queue->head = node;
@@ -118,12 +86,14 @@ void addNode(Node* node){
     queue->size++;
 }
 
+// a helper function to remove the tail of the queue
 void removeQueueTail(void){
     if (queue->size == 1){
         free(queue->tail);
         queue->tail = NULL;
         queue->head = NULL;
         queue->size--;
+        queue->total_visited++;
     }
     else if (queue->size > 1){
         Node* temp = queue->tail->prev;
@@ -131,9 +101,32 @@ void removeQueueTail(void){
         queue->tail = temp;
         queue->tail->next = NULL;
         queue->size--;
+        queue->total_visited++;
+    }
+    else{
+        return;
     }
 }
 
+// a helper function to remove a node from the queue
+void removeNode(Node* node){
+    if (node->prev == NULL){
+        queue->head = node->next;
+        queue->head->prev = NULL;
+    }
+    else if (node->next == NULL){
+        queue->tail = node->prev;
+        queue->tail->next = NULL;
+    }
+    else{
+        node->prev->next = node->next;
+        node->next->prev = node->prev;
+    }
+    free(node);
+    queue->size--;
+    queue->total_visited++;
+}
+// ================================== initialization ==================================
 void initQueue(void) {
     // Initialize the queue
     queue = malloc(sizeof(Queue));
@@ -146,24 +139,31 @@ void initQueue(void) {
     queue->size = 0;
     queue->total_visited = 0;
     mtx_init(&queue->mutex, mtx_plain);
-    cnd_init(&queue->not_empty);
 }
 
+// ================================== destruction ==================================
 void destroyQueue(void){
     // Destroy the queue
+    if (queue == NULL){
+        return;
+    }
+    mtx_lock(&queue->mutex);
+    while (queue->size > 0){
+        removeQueueTail();
+    }
+    while (threads->waiting_threads > 0){
+        removeThreadTail();
+    }
+    mtx_unlock(&queue->mutex);
     mtx_destroy(&queue->mutex);
-    cnd_destroy(&queue->not_empty);
-    free(threads);
-    free(queue);
-
+   
 }
-
+// ================================== queue operations ==================================
 void enqueue(void* item){
     mtx_lock(&queue->mutex);
     Node* new_node = malloc(sizeof(Node));
     new_node->data = item;
     addNode(new_node);
-    queue->total_visited++;
     // wake up the thread that is in tail and let him dequeue the item
     if (threads->waiting_threads > 0 && queue->size > 0){
         cnd_signal(&threads->tail->cond);
@@ -172,66 +172,62 @@ void enqueue(void* item){
     return;
 }
 
-void* dequeue(void){
+void* dequeue(void) {
     mtx_lock(&queue->mutex);
-    // get the last thread that is waiting
-    if (threads->waiting_threads > 0 || queue->size == 0){        
-        // put the thread to sleep until there is an item in the queue
-        // add the thread to the list of threads that are waiting
+    void* item;
+    if(threads -> waiting_threads > 0 || queue -> size == 0){
+        // create a new thread and wait for it to dequeue the item
         ThreadNode* new_thread = malloc(sizeof(ThreadNode));
-        new_thread->thread = thrd_current();
         cnd_init(&new_thread->cond);
         addThread(new_thread);
-        cnd_wait(&new_thread->cond, &queue->mutex);
+        cnd_wait(&new_thread->cond, &queue->mutex);   
     }
-    
-    // remove the thread from the tail of threads that are waiting and dequeue the item
-    void* item = queue->tail->data;
-    removeThreadTail();
+    item = queue->tail->data;
     removeQueueTail();
-    
+    removeThreadTail();
+    // wake up the thread that is in tail and let him dequeue the item
     if (threads->waiting_threads > 0 && queue->size > 0){
         cnd_signal(&threads->tail->cond);
     }
-    
     mtx_unlock(&queue->mutex);
     return item;
-}
+} 
 
 bool tryDequeue(void** item) {
-
     mtx_lock(&queue->mutex);
-    if(queue->size == 0 ){        
+    // if there are more waiting threads than the size of the queue, return false
+    if(threads->waiting_threads >= queue->size){  
         mtx_unlock(&queue->mutex);
         return false;
-    } else{
-        *item = queue->tail->data;
-        // add the thread to the list of threads that are waiting
-        ThreadNode* new_thread = malloc(sizeof(ThreadNode));
-        new_thread->thread = thrd_current();
-        new_thread->next = NULL;
-        cnd_init(&new_thread->cond);
-        addThread(new_thread);
-        // wake up the thread that is in tail and let him dequeue the item
-        if(threads->waiting_threads > 0 && queue->size > 0){
-            cnd_signal(&threads->tail->cond);
-        }   
-        // remove the thread from the tail of threads that are waiting
-        removeThreadTail();
-        // dequeue the item
-        removeQueueTail();
-        
-        mtx_unlock(&queue->mutex);
-        return true;
     }
+    else if (threads->waiting_threads == 0){
+        *item = queue -> tail -> data;
+        removeQueueTail();
+    }
+    // if there are waiting threads, bypass the waiting threads and dequeue the item
+    else{
+        Node* temp = queue->tail;
+        for (int i = 0; i < threads->waiting_threads; i++){
+        temp = temp->prev;
+        }   
+        *item = temp->data;
+        removeNode(temp);
+    }
+    
+    mtx_unlock(&queue->mutex);
+    return true;
+    
 }
-
+// ================================== queue information ==================================//
 size_t size(void) {
     return queue->size;
 }
 
 size_t waiting(void) {
-    return threads->waiting_threads;
+    if (threads->waiting_threads <= queue->size){
+        return 0;
+    }
+    return threads->waiting_threads - queue->size;
 }
 
 size_t visited(void) {
