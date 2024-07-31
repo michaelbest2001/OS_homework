@@ -227,12 +227,13 @@ size_t size(void) {
 }
 
 size_t waiting(void) {
-    return threads->waiting_threads;
+    mtx_lock(&queue->mutex);
+    size_t waiting = threads->waiting_threads;
+    mtx_unlock(&queue->mutex);
+    return waiting;
 }
 
 size_t visited(void) {
-    mtx_lock(&queue->mutex);
-    size_t visited = queue->total_visited;
-    mtx_unlock(&queue->mutex);
-    return visited;
+    // no locks
+    return queue->total_visited;
 }
