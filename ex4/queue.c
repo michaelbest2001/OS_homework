@@ -220,16 +220,19 @@ bool tryDequeue(void** item) {
 }
 // ================================== queue information ==================================//
 size_t size(void) {
-    return queue->size;
+    mtx_lock(&queue->mutex);
+    size_t size = queue->size;
+    mtx_unlock(&queue->mutex);
+    return size;
 }
 
 size_t waiting(void) {
-    if (threads->waiting_threads <= queue->size){
-        return 0;
-    }
-    return threads->waiting_threads - queue->size;
+    return threads->waiting_threads;
 }
 
 size_t visited(void) {
-    return queue->total_visited;
+    mtx_lock(&queue->mutex);
+    size_t visited = queue->total_visited;
+    mtx_unlock(&queue->mutex);
+    return visited;
 }
